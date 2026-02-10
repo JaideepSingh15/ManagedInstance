@@ -1,0 +1,666 @@
+-- SQL and OS Version information for current instance  (Query 1) (Version Info)
+SELECT @@SERVERNAME AS [Server Name], @@VERSION AS [SQL Server and OS Version Info];
+------
+EXEC sys.xp_readerrorlog 0, 1, N'detected', N'socket';
+
+-- Get selected server properties (Query 3) (Server Properties)
+SELECT SERVERPROPERTY('MachineName') AS [MachineName], 
+SERVERPROPERTY('ServerName') AS [ServerName],  
+SERVERPROPERTY('InstanceName') AS [Instance], 
+SERVERPROPERTY('IsClustered') AS [IsClustered], 
+SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS [ComputerNamePhysicalNetBIOS], 
+SERVERPROPERTY('Edition') AS [Edition], 
+SERVERPROPERTY('ProductLevel') AS [ProductLevel],				-- What servicing branch (RTM/SP/CU)
+SERVERPROPERTY('ProductUpdateLevel') AS [ProductUpdateLevel],	-- Within a servicing branch, what CU# is applied
+SERVERPROPERTY('ProductVersion') AS [ProductVersion],
+SERVERPROPERTY('ProductMajorVersion') AS [ProductMajorVersion], 
+SERVERPROPERTY('ProductMinorVersion') AS [ProductMinorVersion], 
+SERVERPROPERTY('ProductBuild') AS [ProductBuild], 
+SERVERPROPERTY('ProductBuildType') AS [ProductBuildType],			  -- Is this a GDR or OD hotfix (NULL if on a CU build)
+SERVERPROPERTY('ProductUpdateReference') AS [ProductUpdateReference], -- KB article number that is applicable for this build
+SERVERPROPERTY('ProcessID') AS [ProcessID],
+SERVERPROPERTY('Collation') AS [Collation], 
+SERVERPROPERTY('IsFullTextInstalled') AS [IsFullTextInstalled], 
+SERVERPROPERTY('IsIntegratedSecurityOnly') AS [IsIntegratedSecurityOnly],
+SERVERPROPERTY('FilestreamConfiguredLevel') AS [FilestreamConfiguredLevel],
+SERVERPROPERTY('IsHadrEnabled') AS [IsHadrEnabled], 
+SERVERPROPERTY('HadrManagerStatus') AS [HadrManagerStatus],
+SERVERPROPERTY('InstanceDefaultDataPath') AS [InstanceDefaultDataPath],
+SERVERPROPERTY('InstanceDefaultLogPath') AS [InstanceDefaultLogPath],
+SERVERPROPERTY('InstanceDefaultBackupPath') AS [InstanceDefaultBackupPath],
+SERVERPROPERTY('ErrorLogFileName') AS [ErrorLogFileName],
+SERVERPROPERTY('BuildClrVersion') AS [Build CLR Version],
+SERVERPROPERTY('IsXTPSupported') AS [IsXTPSupported],
+SERVERPROPERTY('IsPolybaseInstalled') AS [IsPolybaseInstalled],				
+SERVERPROPERTY('IsAdvancedAnalyticsInstalled') AS [IsRServicesInstalled],
+SERVERPROPERTY('IsTempdbMetadataMemoryOptimized') AS [IsTempdbMetadataMemoryOptimized];	
+------
+
+SELECT name, value, value_in_use, minimum, maximum, [description], is_dynamic, is_advanced
+FROM sys.configurations WITH (NOLOCK)
+ORDER BY name OPTION (RECOMPILE);
+
+DBCC TRACESTATUS (-1);
+
+-- (shows whether locked pages is enabled, among other things)
+SELECT physical_memory_in_use_kb/1024 AS [SQL Server Memory Usage (MB)],
+	   locked_page_allocations_kb/1024 AS [SQL Server Locked Pages Allocation (MB)],
+       large_page_allocations_kb/1024 AS [SQL Server Large Pages Allocation (MB)], 
+	   page_fault_count, memory_utilization_percentage, available_commit_limit_kb, 
+	   process_physical_memory_low, process_virtual_memory_low
+FROM sys.dm_os_process_memory WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+-- SQL Server Services information (Query 7) (SQL Server Services Info)
+SELECT servicename, process_id, startup_type_desc, status_desc, 
+last_startup_time, service_account, is_clustered, cluster_nodename, [filename], 
+instant_file_initialization_enabled
+FROM sys.dm_server_services WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+
+-- Last backup information by database  (Query 8) (Last Backup By Database)
+SELECT ISNULL(d.[name], bs.[database_name]) AS [Database], d.recovery_model_desc AS [Recovery Model], 
+    d.log_reuse_wait_desc AS [Log Reuse Wait Desc],
+	CONVERT(DECIMAL(18,2), ds.cntr_value/1024.0) AS [Total Data File Size on Disk (MB)],
+	CONVERT(DECIMAL(18,2), ls.cntr_value/1024.0) AS [Total Log File Size on Disk (MB)], 
+	CAST(CAST(lu.cntr_value AS FLOAT) / CAST(ls.cntr_value AS FLOAT) AS DECIMAL(18,2)) * 100 AS [Log Used %],
+    MAX(CASE WHEN bs.[type] = 'D' THEN bs.backup_finish_date ELSE NULL END) AS [Last Full Backup],
+	MAX(CASE WHEN bs.[type] = 'D' THEN CONVERT (BIGINT, bs.compressed_backup_size / 1048576 ) ELSE NULL END) AS [Last Full Compressed Backup Size (MB)],
+	MAX(CASE WHEN bs.[type] = 'D' THEN CONVERT (DECIMAL(18,2), bs.backup_size /bs.compressed_backup_size ) ELSE NULL END) AS [Backup Compression Ratio],
+    MAX(CASE WHEN bs.[type] = 'I' THEN bs.backup_finish_date ELSE NULL END) AS [Last Differential Backup],
+    MAX(CASE WHEN bs.[type] = 'L' THEN bs.backup_finish_date ELSE NULL END) AS [Last Log Backup],
+	DATABASEPROPERTYEX ((d.[name]), 'LastGoodCheckDbTime') AS [Last Good CheckDB]
+FROM sys.databases AS d WITH (NOLOCK)
+INNER JOIN sys.master_files as mf WITH (NOLOCK)
+ON d.database_id = mf.database_id
+LEFT OUTER JOIN msdb.dbo.backupset AS bs WITH (NOLOCK)
+ON bs.[database_name] = d.[name]
+AND bs.backup_finish_date > GETDATE()- 30
+LEFT OUTER JOIN sys.dm_os_performance_counters AS lu WITH (NOLOCK)
+ON d.name = lu.instance_name
+LEFT OUTER JOIN sys.dm_os_performance_counters AS ls WITH (NOLOCK)
+ON d.name = ls.instance_name
+INNER JOIN sys.dm_os_performance_counters AS ds WITH (NOLOCK)
+ON d.name = ds.instance_name
+WHERE d.name <> N'tempdb'
+AND lu.counter_name LIKE N'Log File(s) Used Size (KB)%' 
+AND ls.counter_name LIKE N'Log File(s) Size (KB)%'
+AND ds.counter_name LIKE N'Data File(s) Size (KB)%'
+AND ls.cntr_value > 0 
+GROUP BY ISNULL(d.[name], bs.[database_name]), d.recovery_model_desc, d.log_reuse_wait_desc, d.[name],
+         CONVERT(DECIMAL(18,2), ds.cntr_value/1024.0),
+	     CONVERT(DECIMAL(18,2), ls.cntr_value/1024.0), 
+         CAST(CAST(lu.cntr_value AS FLOAT) / CAST(ls.cntr_value AS FLOAT) AS DECIMAL(18,2)) * 100
+ORDER BY d.recovery_model_desc, d.[name] OPTION (RECOMPILE);
+------
+
+-- This helps you spot runaway transaction logs and other issues with your backup schedule
+
+
+-- Get SQL Server Agent jobs and Category information (Query 9) (SQL Server Agent Jobs)
+SELECT sj.name AS [Job Name], sj.[description] AS [Job Description], 
+sc.name AS [CategoryName], SUSER_SNAME(sj.owner_sid) AS [Job Owner],
+sj.date_created AS [Date Created], sj.[enabled] AS [Job Enabled], h.run_status,
+CONVERT(DATETIME, RTRIM(h.run_date) + ' ' + STUFF(STUFF(REPLACE(STR(RTRIM(h.run_time),6,0),' ','0'),3,0,':'),6,0,':')) AS [Last Start Date],
+RIGHT(STUFF(STUFF(REPLACE(STR(h.run_duration, 7, 0), ' ', '0'), 4, 0, ':'), 7, 0, ':'),8) AS [Last Duration - HHMMSS],
+s.[name] AS [Schedule Name], s.[enabled] AS [Schedule Enabled], js.next_run_date, js.next_run_time
+FROM msdb.dbo.sysjobs AS sj WITH (NOLOCK)
+LEFT OUTER JOIN
+    (SELECT job_id, instance_id = MAX(instance_id)
+     FROM msdb.dbo.sysjobhistory WITH (NOLOCK)
+     GROUP BY job_id) AS l
+ON sj.job_id = l.job_id
+LEFT OUTER JOIN msdb.dbo.syscategories AS sc WITH (NOLOCK)
+ON sj.category_id = sc.category_id
+LEFT OUTER JOIN msdb.dbo.sysjobhistory AS h WITH (NOLOCK)
+ON h.job_id = l.job_id
+AND h.instance_id = l.instance_id
+LEFT OUTER JOIN msdb.dbo.sysjobs_view AS jv WITH (NOLOCK)
+ON jv.job_id = sj.job_id
+LEFT OUTER JOIN msdb.dbo.sysjobschedules AS js WITH (NOLOCK)
+ON jv.job_id = js.job_id
+LEFT OUTER JOIN msdb.dbo.sysschedules AS s WITH (NOLOCK)
+ON s.schedule_id = js.schedule_id
+ORDER BY CONVERT(INT, h.run_duration) DESC, [Last Start Date] DESC OPTION (RECOMPILE);
+------
+
+-- Get SQL Server Agent Alert Information (Query 10) (SQL Server Agent Alerts)
+SELECT name, event_source, message_id, severity, [enabled], has_notification, 
+       delay_between_responses, occurrence_count, last_occurrence_date, last_occurrence_time
+FROM msdb.dbo.sysalerts WITH (NOLOCK)
+ORDER BY name OPTION (RECOMPILE);
+------
+
+SELECT host_platform, host_distribution, host_release, 
+       host_service_pack_level, host_sku, os_language_version,
+	   host_architecture
+FROM sys.dm_os_host_info WITH (NOLOCK) OPTION (RECOMPILE); 
+
+-- SQL Server NUMA Node information  (Query 12) (SQL Server NUMA Info)
+SELECT osn.node_id, osn.node_state_desc, osn.memory_node_id, osn.processor_group, osn.cpu_count, osn.online_scheduler_count, 
+       osn.idle_scheduler_count, osn.active_worker_count, 
+	   osmn.pages_kb/1024 AS [Committed Memory (MB)], 
+	   osmn.locked_page_allocations_kb/1024 AS [Locked Physical (MB)],
+	   CONVERT(DECIMAL(18,2), osmn.foreign_committed_kb/1024.0) AS [Foreign Commited (MB)],
+	   osmn.target_kb/1024 AS [Target Memory Goal (MB)],
+	   osn.avg_load_balance, osn.resource_monitor_state
+FROM sys.dm_os_nodes AS osn WITH (NOLOCK)
+INNER JOIN sys.dm_os_memory_nodes AS osmn WITH (NOLOCK)
+ON osn.memory_node_id = osmn.memory_node_id
+WHERE osn.node_state_desc <> N'ONLINE DAC' OPTION (RECOMPILE);
+------
+
+
+-- Good basic information about OS memory amounts and state  (Query 13) (System Memory)
+SELECT total_physical_memory_kb/1024 AS [Physical Memory (MB)], 
+       available_physical_memory_kb/1024 AS [Available Memory (MB)], 
+       total_page_file_kb/1024 AS [Page File Commit Limit (MB)],
+	   total_page_file_kb/1024 - total_physical_memory_kb/1024 AS [Physical Page File Size (MB)],
+	   available_page_file_kb/1024 AS [Available Page File (MB)], 
+	   system_cache_kb/1024 AS [System Cache (MB)],
+       system_memory_state_desc AS [System Memory State]
+FROM sys.dm_os_sys_memory WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+DECLARE @MaxServerMemoryMB AS DECIMAL (15,2);
+DECLARE @SQLServerMemoryUsageMB AS BIGINT;
+DECLARE @SQLServerLockedPagesAllocationMB AS BIGINT;
+DECLARE @TotalPhysicalMemoryMB AS DECIMAL (15,2);
+DECLARE @AvailablePhysicalMemoryMB AS BIGINT;
+DECLARE @SystemMemoryState AS NVARCHAR(50);
+DECLARE @SQLServerStartTime AS DATETIME; 
+DECLARE @SQLBufferPoolMemoryUsageMB AS DECIMAL (15,2);
+DECLARE @SQLSOSNODEMemoryUsageMB AS DECIMAL (15,2);
+DECLARE @AvgPageLifeExpectancy int = 0;
+
+-- Basic information about OS memory amounts and state  
+SELECT @TotalPhysicalMemoryMB = total_physical_memory_kb/1024, 
+		@AvailablePhysicalMemoryMB = available_physical_memory_kb/1024, 
+		@SystemMemoryState = system_memory_state_desc 
+FROM sys.dm_os_sys_memory WITH (NOLOCK) OPTION (RECOMPILE);
+
+-- Get instance-level configuration value for instance  
+SELECT @MaxServerMemoryMB = CONVERT(INT, value)
+FROM sys.configurations WITH (NOLOCK)
+WHERE [name] = N'max server memory (MB)' OPTION (RECOMPILE);
+
+-- SQL Server Memory Usage and Locked Pages Allocations 
+SELECT @SQLServerMemoryUsageMB = physical_memory_in_use_kb/1024, 
+		@SQLServerLockedPagesAllocationMB = locked_page_allocations_kb/1024	   
+FROM sys.dm_os_process_memory WITH (NOLOCK) OPTION (RECOMPILE);
+
+-- SQL Server Start Time
+SELECT @SQLServerStartTime = sqlserver_start_time 
+FROM sys.dm_os_sys_info WITH (NOLOCK) OPTION (RECOMPILE);
+
+-- SQLBUFFERPOOL Memory Clerk Usage 
+SELECT @SQLBufferPoolMemoryUsageMB = 
+		CAST((SUM(mc.pages_kb)/1024.0) AS DECIMAL (15,2)) 
+FROM sys.dm_os_memory_clerks AS mc WITH (NOLOCK)
+WHERE mc.[type] = N'MEMORYCLERK_SQLBUFFERPOOL'
+GROUP BY mc.[type] OPTION (RECOMPILE);  
+
+-- MEMORYCLERK_SOSNODE Memory Clerk Usage 
+SELECT @SQLSOSNODEMemoryUsageMB = 
+		CAST((SUM(mc.pages_kb)/1024.0) AS DECIMAL (15,2)) 
+FROM sys.dm_os_memory_clerks AS mc WITH (NOLOCK)
+WHERE mc.[type] = N'MEMORYCLERK_SOSNODE'
+GROUP BY mc.[type] OPTION (RECOMPILE);  
+
+-- Page Life Expectancy (PLE) value for current instance  
+SET @AvgPageLifeExpectancy = (SELECT AVG(cntr_value) AS [PageLifeExpectancy]
+FROM sys.dm_os_performance_counters WITH (NOLOCK)
+WHERE [object_name] LIKE N'%Buffer Node%' -- Handles named instances
+AND counter_name = N'Page life expectancy'); 
+
+-- Return final results
+SELECT  @@SERVERNAME AS [Server Name], @@VERSION AS [SQL Server and OS Version Info],
+		CONVERT(INT, @TotalPhysicalMemoryMB) AS [OS Physical Memory (MB)],		
+		@SystemMemoryState AS [System Memory State],
+		@AvailablePhysicalMemoryMB AS [OS Available Memory (MB)],
+		CONVERT(INT, @MaxServerMemoryMB) AS [SQL Server Max Server Memory (MB)],
+		CONVERT(DECIMAL(18,2),(@MaxServerMemoryMB/@TotalPhysicalMemoryMB) * 100.0) AS [Max Server Memory %],
+		@SQLServerMemoryUsageMB AS [SQL Server Total Memory Usage (MB)],
+		@AvgPageLifeExpectancy AS [Page Life Expectancy (Seconds)],
+		@SQLBufferPoolMemoryUsageMB AS [SQL Buffer Pool Memory Usage (MB)],
+		@SQLSOSNODEMemoryUsageMB AS [SOSNODE Memory Clerk Memory Usage (MB)],
+		@SQLServerLockedPagesAllocationMB AS [SQL Server Locked Pages Allocation (MB)],
+		@SQLServerStartTime AS [SQL Server Start Time];
+GO
+------
+-- End of Query 14 ***************************************************
+
+
+
+-- Get information about any AlwaysOn AG cluster this instance is a part of (Query 15) (AlwaysOn AG Cluster)
+SELECT cluster_name, quorum_type_desc, quorum_state_desc
+FROM sys.dm_hadr_cluster WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+
+
+-- Good overview of AG health and status (Query 16) (AG Status)
+SELECT ag.name AS [AG Name], ar.replica_server_name, ar.availability_mode_desc, adc.[database_name], 
+       drs.is_local, drs.is_primary_replica, drs.synchronization_state_desc, drs.is_commit_participant, 
+	   drs.synchronization_health_desc, drs.recovery_lsn, drs.truncation_lsn, drs.last_sent_lsn, 
+	   drs.last_sent_time, drs.last_received_lsn, drs.last_received_time, drs.last_hardened_lsn, 
+	   drs.last_hardened_time, drs.last_redone_lsn, drs.last_redone_time, drs.log_send_queue_size, 
+	   drs.log_send_rate, drs.redo_queue_size, drs.redo_rate, drs.filestream_send_rate, 
+	   drs.end_of_log_lsn, drs.last_commit_lsn, drs.last_commit_time, drs.database_state_desc 
+FROM sys.dm_hadr_database_replica_states AS drs WITH (NOLOCK)
+INNER JOIN sys.availability_databases_cluster AS adc WITH (NOLOCK)
+ON drs.group_id = adc.group_id 
+AND drs.group_database_id = adc.group_database_id
+INNER JOIN sys.availability_groups AS ag WITH (NOLOCK)
+ON ag.group_id = drs.group_id
+INNER JOIN sys.availability_replicas AS ar WITH (NOLOCK)
+ON drs.group_id = ar.group_id 
+AND drs.replica_id = ar.replica_id
+ORDER BY ag.name, ar.replica_server_name, adc.[database_name] OPTION (RECOMPILE);
+
+-- Hardware information from SQL Server 2019  (Query 17) (Hardware Info)
+SELECT cpu_count AS [Logical CPU Count], scheduler_count, 
+       (socket_count * cores_per_socket) AS [Physical Core Count], 
+       socket_count AS [Socket Count], cores_per_socket, numa_node_count,
+       physical_memory_kb/1024 AS [Physical Memory (MB)], 
+       max_workers_count AS [Max Workers Count], 
+	   affinity_type_desc AS [Affinity Type], 
+       sqlserver_start_time AS [SQL Server Start Time],
+	   DATEDIFF(hour, sqlserver_start_time, GETDATE()) AS [SQL Server Up Time (hrs)],
+	   virtual_machine_type_desc AS [Virtual Machine Type], 
+       softnuma_configuration_desc AS [Soft NUMA Configuration], 
+	   sql_memory_model_desc, 
+	   container_type_desc -- New in SQL Server 2019
+FROM sys.dm_os_sys_info WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+EXEC sys.xp_readerrorlog 0, 1, N'Manufacturer';
+------ 
+
+
+-- Get BIOS date from Windows Registry (Query 19) (BIOS Date)
+EXEC sys.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'HARDWARE\DESCRIPTION\System\BIOS', N'BiosReleaseDate';
+------
+
+
+-- Get processor description from Windows Registry  (Query 20) (Processor Description)
+EXEC sys.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'HARDWARE\DESCRIPTION\System\CentralProcessor\0', N'ProcessorNameString';
+------
+
+-- Get information on location, time and size of any memory dumps from SQL Server  (Query 21) (Memory Dump Info)
+SELECT [filename], creation_time, size_in_bytes/1048576.0 AS [Size (MB)]
+FROM sys.dm_server_memory_dumps WITH (NOLOCK) 
+ORDER BY creation_time DESC OPTION (RECOMPILE);
+------
+
+-- Look at Suspect Pages table (Query 22) (Suspect Pages)
+SELECT DB_NAME(sp.database_id) AS [Database Name], 
+       sp.[file_id], sp.page_id, sp.event_type, 
+	   sp.error_count, sp.last_update_date,
+	   mf.name AS [Logical Name], mf.physical_name AS [File Path]
+FROM msdb.dbo.suspect_pages AS sp WITH (NOLOCK)
+INNER JOIN sys.master_files AS mf WITH (NOLOCK)
+ON mf.database_id = sp.database_id 
+AND mf.file_id = sp.file_id
+ORDER BY sp.database_id OPTION (RECOMPILE);
+------
+
+
+-- Read most recent entries from all SQL Server Error Logs (Query 23) (Error Log Entries)
+DROP TABLE IF EXISTS #ErrorLogFiles;
+	CREATE TABLE #ErrorLogFiles
+	([Archive #] INT,[Date] NVARCHAR(25),[Log File Size (Byte)]INT)
+
+INSERT INTO #ErrorLogFiles
+([Archive #],[Date],[Log File Size (Byte)])
+EXEC master.sys.xp_enumerrorlogs;
+
+DROP TABLE IF EXISTS #SQLErrorLog_AllLogs;
+	CREATE TABLE #SQLErrorLog_AllLogs
+	(LogDate DATETIME ,ProcessInfo NVARCHAR(12), LogText NVARCHAR(4000))
+
+DECLARE @i INT = 0;
+DECLARE @sql NVARCHAR(200) = N'';
+DECLARE @logCount INT = (SELECT COUNT(*) FROM #ErrorLogFiles);
+
+WHILE (@i < @logCount)
+    BEGIN
+        IF(@i in (SELECT [Archive #] FROM #ErrorLogFiles))
+            BEGIN
+                SET @sql = N'INSERT INTO #SQLErrorLog_AllLogs (LogDate, ProcessInfo, LogText)
+                             EXEC master.sys.sp_readerrorlog ' + CAST(@i AS NVARCHAR(2)) + N';'
+                EXEC master.sys.sp_executesql @sql;
+            END
+        SET @i += 1;
+    END
+
+SELECT TOP(1000)LogDate, ProcessInfo, LogText 
+FROM #SQLErrorLog_AllLogs WITH (NOLOCK)
+ORDER BY LogDate DESC OPTION (RECOMPILE);
+
+DROP TABLE IF EXISTS #ErrorLogFiles;
+DROP TABLE IF EXISTS #SQLErrorLog_AllLogs;
+GO
+------
+
+
+-- Get number of data files in tempdb database (Query 24) (TempDB Data Files)
+EXEC sys.xp_readerrorlog 0, 1, N'The tempdb database has';
+------
+
+EXEC sys.xp_readerrorlog 0, 1, N'The tempdb database data files are not configured with the same initial size';
+------
+
+-- File names and paths for all user and system databases on instance  (Query 26) (Database Filenames and Paths)
+SELECT DB_NAME([database_id]) AS [Database Name], 
+       [file_id], [name], physical_name, [type_desc], state_desc,
+	   is_percent_growth, growth, 
+	   CONVERT(bigint, growth/128.0) AS [Growth in MB], 
+       CONVERT(bigint, size/128.0) AS [Total Size in MB], max_size
+FROM sys.master_files WITH (NOLOCK)
+ORDER BY DB_NAME([database_id]), [file_id] OPTION (RECOMPILE);
+------
+
+-- Drive information for all fixed drives visible to the operating system (Query 27) (Fixed Drives)
+SELECT fixed_drive_path, drive_type_desc, 
+CONVERT(DECIMAL(18,2), free_space_in_bytes/1073741824.0) AS [Available Space (GB)]
+FROM sys.dm_os_enumerate_fixed_drives WITH (NOLOCK) OPTION (RECOMPILE);
+------
+
+-- Volume info for all LUNS that have database files on the current instance (Query 28) (Volume Info)
+SELECT DISTINCT vs.volume_mount_point, vs.file_system_type, vs.logical_volume_name, 
+CONVERT(DECIMAL(18,2), vs.total_bytes/1073741824.0) AS [Total Size (GB)],
+CONVERT(DECIMAL(18,2), vs.available_bytes/1073741824.0) AS [Available Size (GB)],  
+CONVERT(DECIMAL(18,2), vs.available_bytes * 1. / vs.total_bytes * 100.) AS [Space Free %],
+vs.supports_compression, vs.is_compressed, 
+vs.supports_sparse_files, vs.supports_alternate_streams
+FROM sys.master_files AS f WITH (NOLOCK)
+CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.[file_id]) AS vs 
+ORDER BY vs.volume_mount_point OPTION (RECOMPILE);
+------
+
+
+-- Resource Governor Resource Pool information (Query 32) (RG Resource Pools)
+SELECT pool_id, [name], statistics_start_time,
+       min_memory_percent, max_memory_percent,  
+       max_memory_kb/1024 AS [max_memory_mb],  
+       used_memory_kb/1024 AS [used_memory_mb],   
+       target_memory_kb/1024 AS [target_memory_mb],
+	   min_iops_per_volume, max_iops_per_volume
+FROM sys.dm_resource_governor_resource_pools WITH (NOLOCK)
+OPTION (RECOMPILE);
+------
+
+
+-- Recovery model, log reuse wait description, log file size, log usage size  (Query 33) (Database Properties)
+-- and compatibility level for all databases on instance
+SELECT db.[name] AS [Database Name], SUSER_SNAME(db.owner_sid) AS [Database Owner],
+db.[compatibility_level] AS [DB Compatibility Level], 
+db.recovery_model_desc AS [Recovery Model], 
+db.log_reuse_wait_desc AS [Log Reuse Wait Description],
+CONVERT(DECIMAL(18,2), ds.cntr_value/1024.0) AS [Total Data File Size on Disk (MB)],
+CONVERT(DECIMAL(18,2), ls.cntr_value/1024.0) AS [Total Log File Size on Disk (MB)], 
+CONVERT(DECIMAL(18,2), lu.cntr_value/1024.0) AS [Log File Used (MB)],
+CAST(CAST(lu.cntr_value AS FLOAT) / CAST(ls.cntr_value AS FLOAT)AS DECIMAL(18,2)) * 100 AS [Log Used %], 
+db.page_verify_option_desc AS [Page Verify Option], db.user_access_desc, db.state_desc, db.containment_desc,
+db.is_mixed_page_allocation_on,  
+db.is_auto_create_stats_on, db.is_auto_update_stats_on, db.is_auto_update_stats_async_on, db.is_parameterization_forced, 
+db.snapshot_isolation_state_desc, db.is_read_committed_snapshot_on, db.is_auto_close_on, db.is_auto_shrink_on, 
+db.target_recovery_time_in_seconds, db.is_cdc_enabled, db.is_published, db.is_distributor, db.is_sync_with_backup, 
+db.group_database_id, db.replica_id, db.is_memory_optimized_enabled, db.is_memory_optimized_elevate_to_snapshot_on, 
+db.delayed_durability_desc, db.is_query_store_on, 
+db.is_temporal_history_retention_enabled, db.is_accelerated_database_recovery_on,
+db.is_master_key_encrypted_by_server, db.is_encrypted, de.encryption_state, de.percent_complete, de.key_algorithm, de.key_length
+FROM sys.databases AS db WITH (NOLOCK)
+LEFT OUTER JOIN sys.dm_os_performance_counters AS lu WITH (NOLOCK)
+ON db.name = lu.instance_name
+LEFT OUTER JOIN sys.dm_os_performance_counters AS ls WITH (NOLOCK)
+ON db.name = ls.instance_name
+LEFT OUTER JOIN sys.dm_os_performance_counters AS ds WITH (NOLOCK)
+ON db.name = ds.instance_name
+LEFT OUTER JOIN sys.dm_database_encryption_keys AS de WITH (NOLOCK)
+ON db.database_id = de.database_id
+WHERE lu.counter_name LIKE N'Log File(s) Used Size (KB)%' 
+AND ls.counter_name LIKE N'Log File(s) Size (KB)%'
+AND ds.counter_name LIKE N'Data File(s) Size (KB)%'
+AND ls.cntr_value > 0 
+ORDER BY db.[name] OPTION (RECOMPILE);
+------
+
+
+
+-- Get VLF Counts for all databases on the instance (Query 35) (VLF Counts)
+SELECT db.[name] AS [Database Name], li.[VLF Count]
+FROM sys.databases AS db WITH (NOLOCK)
+CROSS APPLY (SELECT file_id, COUNT(*) AS [VLF Count]
+		     FROM sys.dm_db_log_info (db.database_id)
+			 GROUP BY file_id) AS li
+ORDER BY li.[VLF Count] DESC OPTION (RECOMPILE);
+------
+
+
+-- Get a count of SQL connections by IP address (Query 41) (Connection Counts by IP Address)
+SELECT ec.client_net_address, es.[program_name], es.[host_name], es.login_name, 
+COUNT(ec.session_id) AS [connection count] 
+FROM sys.dm_exec_sessions AS es WITH (NOLOCK) 
+INNER JOIN sys.dm_exec_connections AS ec WITH (NOLOCK) 
+ON es.session_id = ec.session_id 
+GROUP BY ec.client_net_address, es.[program_name], es.[host_name], es.login_name  
+ORDER BY ec.client_net_address, es.[program_name] OPTION (RECOMPILE);
+------
+
+
+
+
+-- Page Life Expectancy (PLE) value for each NUMA node in current instance  (Query 47) (PLE by NUMA Node)
+SELECT @@SERVERNAME AS [Server Name], RTRIM([object_name]) AS [Object Name], 
+       instance_name, cntr_value AS [Page Life Expectancy], GETDATE() AS [System Time]
+FROM sys.dm_os_performance_counters WITH (NOLOCK)
+WHERE [object_name] LIKE N'%Buffer Node%' -- Handles named instances
+AND counter_name = N'Page life expectancy' OPTION (RECOMPILE);
+------
+
+
+-- Memory Grants Pending value for current instance  (Query 48) (Memory Grants Pending)
+SELECT @@SERVERNAME AS [Server Name], RTRIM([object_name]) AS [Object Name], cntr_value AS [Memory Grants Pending]                                                                                                       
+FROM sys.dm_os_performance_counters WITH (NOLOCK)
+WHERE [object_name] LIKE N'%Memory Manager%' -- Handles named instances
+AND counter_name = N'Memory Grants Pending' OPTION (RECOMPILE);
+------
+
+--Command to Find Data and Log File Locations
+
+DECLARE @command varchar(1000) 
+SELECT @command = 'USE ? 
+ 
+SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,f.[name] AS [File Name] , f.physical_name AS [Physical Name], 
+CAST((f.size/128.0) AS DECIMAL(15,2)) AS [Total Size in MB],
+CAST((f.size/128.0) AS DECIMAL(15,2)) - 
+CAST(f.size/128.0 - CAST(FILEPROPERTY(f.name, ''SpaceUsed'') AS int)/128.0 AS DECIMAL(15,2)) 
+AS [Used Space in MB],
+CAST(f.size/128.0 - CAST(FILEPROPERTY(f.name, ''SpaceUsed'') AS int)/128.0 AS DECIMAL(15,2)) 
+AS [Available Space In MB],
+f.[file_id], fg.name AS [Filegroup Name],
+f.is_percent_growth, f.growth, fg.is_default, fg.is_read_only, fg.is_autogrow_all_files
+FROM sys.database_files AS f WITH (NOLOCK) 
+LEFT OUTER JOIN sys.filegroups AS fg WITH (NOLOCK)
+ON f.data_space_id = fg.data_space_id
+ORDER BY f.[type], f.[file_id] OPTION (RECOMPILE);'
+
+EXEC sp_MSforeachdb @command
+
+
+---Command to Find if any endpoints defined on Databases
+
+SELECT @command = 'USE ? 
+
+ SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+    name AS EndpointName,
+    protocol_desc AS Protocol,
+    type_desc AS EndpointType,
+    state_desc AS State,
+    is_admin_endpoint AS IsAdminEndpoint
+FROM 
+    sys.endpoints; '
+
+   EXEC sp_MSforeachdb @command                
+ 
+ -- Query to check any Symmetric Keys or DMK Created on Database
+ 
+ SELECT @command = 'USE ? 
+
+ select @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+ * from sys.symmetric_keys'
+
+  EXEC sp_MSforeachdb @command 
+
+ -- Query to check any ASymmetric Keys Created on Database
+
+
+SELECT @command = 'USE ? 
+
+ select @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+ * from sys.asymmetric_keys'
+
+EXEC sp_MSforeachdb @command 
+
+ -- Query to check any certificates Created on Database
+
+
+SELECT @command = 'USE ? 
+
+ select @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+ * from sys.certificates'
+
+EXEC sp_MSforeachdb @command 
+
+-- Query to check Database Backups Details
+
+SELECT @command = 'USE ? 
+
+SELECT TOP (10) bs.machine_name, bs.server_name, bs.database_name AS [Database Name], bs.recovery_model,bs.[type],
+CONVERT (BIGINT, bs.backup_size / 1048576 ) AS [Uncompressed Backup Size (MB)],
+CONVERT (BIGINT, bs.compressed_backup_size / 1048576 ) AS [Compressed Backup Size (MB)],
+CONVERT (NUMERIC (20,2), (CONVERT (FLOAT, bs.backup_size) /
+CONVERT (FLOAT, bs.compressed_backup_size))) AS [Compression Ratio], bs.has_backup_checksums, bs.is_copy_only, bs.encryptor_type,
+DATEDIFF (SECOND, bs.backup_start_date, bs.backup_finish_date) AS [Backup Elapsed Time (sec)],
+bs.backup_finish_date AS [Backup Finish Date], bmf.physical_device_name AS [Backup Location], bmf.physical_block_size
+FROM msdb.dbo.backupset AS bs WITH (NOLOCK)
+INNER JOIN msdb.dbo.backupmediafamily AS bmf WITH (NOLOCK)
+ON bs.media_set_id = bmf.media_set_id  
+WHERE bs.database_name = DB_NAME(DB_ID())
+AND bs.[type] in( ''D'',''I'',''L'') 
+ORDER BY bs.backup_finish_date DESC OPTION (RECOMPILE);'
+
+EXEC sp_MSforeachdb @command 
+
+SELECT @command = 'USE ? 
+
+SELECT  @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+    sk.name AS SymmetricKeyName,
+    sk.symmetric_key_id,
+    sk.algorithm_desc AS AlgorithmType,
+    sk.key_length AS KeyLength,
+    ke.crypt_type_desc AS ProtectorType,
+    CASE 
+        WHEN ke.crypt_type_desc = ''CERTIFICATE'' THEN certs.name
+        WHEN ke.crypt_type_desc = ''ASYMMETRIC KEY'' THEN asym.name
+        WHEN ke.crypt_type_desc = ''DATABASE MASTER KEY'' THEN ''Database Master Key''
+        WHEN ke.crypt_type_desc = ''SERVICE MASTER KEY'' THEN ''Service Master Key''
+        WHEN ke.crypt_type_desc = ''PASSWORD'' THEN ''Password''
+        ELSE ''Unknown''
+    END AS ProtectorName,
+    sk.create_date,
+    sk.modify_date
+FROM sys.symmetric_keys sk
+LEFT JOIN sys.key_encryptions ke 
+    ON sk.symmetric_key_id = ke.key_id
+LEFT JOIN sys.certificates certs 
+    ON ke.crypt_property = certs.thumbprint
+LEFT JOIN sys.asymmetric_keys asym 
+    ON ke.crypt_property = asym.thumbprint
+ORDER BY sk.name;'
+
+EXEC sp_MSforeachdb @command
+
+-- Query to Find Linked Servers Information
+ 
+EXEC sp_linkedservers;
+
+---Command to Find if Proxy Accounts are set on Database
+
+SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+    proxy_id,
+    name AS proxy_name,
+    credential_id,
+    enabled,
+    description
+FROM 
+    msdb.dbo.sysproxies
+ORDER BY 
+    proxy_id;
+
+---Command to Find if Server Level Triggers Created
+
+ SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+    name AS TriggerName,
+    create_date AS CreationDate,
+    modify_date AS LastModifiedDate,
+    is_disabled AS IsDisabled
+FROM 
+    sys.server_triggers;
+
+---Command to find all login information on Server
+
+    select @@servername as ServerName,DB_NAME() AS CurrentDatabase,* from sys.syslogins
+
+---Command to find any backup device configured for SQL Server
+
+SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+    name AS BackupDeviceName,
+    physical_name AS PhysicalPath,
+    type_desc AS DeviceType
+FROM 
+    sys.backup_devices;
+
+---Command to find any TDE Encrypted Databases
+
+SELECT DB_NAME(database_id) AS DatabaseName, encryption_state,
+encryption_state_desc =
+CASE encryption_state
+         WHEN '0'  THEN  'No database encryption key present, no encryption'
+         WHEN '1'  THEN  'Unencrypted'
+         WHEN '2'  THEN  'Encryption in progress'
+         WHEN '3'  THEN  'Encrypted'
+         WHEN '4'  THEN  'Key change in progress'
+         WHEN '5'  THEN  'Decryption in progress'
+         WHEN '6'  THEN  'Protection change in progress (The certificate or asymmetric key that is encrypting the database encryption key is being changed.)'
+         ELSE 'No Status'
+         END,
+percent_complete,encryptor_thumbprint, encryptor_type  FROM sys.dm_database_encryption_keys
+
+---Command to find if DB Mail is configured
+
+ SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+ * FROM msdb.dbo.sysmail_event_log;
+
+---Command to find Extended Events Configures on Servers
+
+SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+* FROM sys.server_event_sessions WHERE name != 'MonitorUserDefinedException'
+
+---Command to find DBMail Details
+
+ SELECT top 10 @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+ sent_account_id, sent_date FROM msdb.dbo.sysmail_sentitems;
+
+
+-- SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+--* FROM [SSISDB].[catalog].[packages];
+
+ -- SELECT @@servername as ServerName,DB_NAME() AS CurrentDatabase,
+ -- * FROM [SSISDB].[catalog].[projects];
+
+
+
